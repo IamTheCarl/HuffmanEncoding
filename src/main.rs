@@ -829,6 +829,26 @@ pub mod encoding {
 
                 assert_maps_eq(list, weighted_list);
             }
+
+            #[test]
+            fn build_weighted_list_of_all_symbols_store_then_load() {
+                // I'm trying really hard to break this.
+
+                let mut data = Vec::new();
+                for value in 0..255 as u8 {
+                    data.push(value);
+                }
+
+                let list = HuffmanCoder::build_weighted_list(&data);
+                let mut stored = Vec::new();
+                HuffmanCoder::store_weighted_list(&list, &mut stored);
+
+                let mut data_cursor = Cursor::new(&data);
+                let loaded =
+                    HuffmanCoder::load_weighted_list(&mut data_cursor).unwrap();
+
+                assert_maps_eq(list, loaded);
+            }
         }
 
         #[cfg(test)]
