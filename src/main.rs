@@ -409,10 +409,6 @@ pub mod encoding {
         }
 
         fn store_weighted_list(list: &HashMap<u8, u32>, data: &mut Vec<u8>) {
-            // With the key being a u8, it shouldn't be possible to end up with enough elements to
-            // overflow this.
-            data.write_u8(list.len() as u8).unwrap();
-
             for pair in list.iter() {
 
                 let deref_pair = (*pair.0, *pair.1);
@@ -420,16 +416,27 @@ pub mod encoding {
                 data.write_u8(deref_pair.0).unwrap();
                 data.write_u32::<NetworkEndian>(deref_pair.1).unwrap();
             }
+
+            // Five zeros indicate the end of the list. The first zero doesn't have to be a zero.
+            // It's the count of zero that actually indicates the end of the list.
+            for _n in 0..5 {
+                data.write_u8(0).unwrap();
+            }
         }
 
         fn load_weighted_list(data: &mut Cursor<&Vec<u8>>) -> Result<HashMap<u8, u32>, io::Error> {
-            let num_sym = data.read_u8()?;
-
             let mut map = HashMap::new();
 
-            for _n in 0..num_sym {
+            loop {
                 let key = data.read_u8()?;
-                map.entry(key).or_insert(data.read_u32::<NetworkEndian>()?);
+                let count = data.read_u32::<NetworkEndian>()?;
+
+                // A count of zero indicates an end of file.
+                if count == 0 {
+                    break;
+                }
+
+                map.entry(key).or_insert(count);
             }
 
             Ok(map)
@@ -572,7 +579,6 @@ pub mod encoding {
                 let byte = Self::decode_byte(&mut banger, &tree)?;
                 match byte {
                     Some(byte) => {
-                        print!("{}", byte as char);
                         decoded.push(byte)
                     },
                     None => break // End of file.
@@ -690,7 +696,10 @@ pub mod encoding {
                 list.entry(0x55).or_insert(0xA3A33A3A);
                 let mut data = Vec::new();
 
-                let correct: Vec<u8>  = vec![0x01, 0x55, 0xA3, 0xA3, 0x3A, 0x3A];
+                let correct: Vec<u8>  = vec![
+                    0x55, 0xA3, 0xA3, 0x3A, 0x3A,
+                    0x00, 0x00, 0x00, 0x00, 0x00
+                ];
 
                 HuffmanCoder::store_weighted_list(&list, &mut data);
 
@@ -717,9 +726,8 @@ pub mod encoding {
                 HuffmanCoder::store_weighted_list(&list, &mut data);
 
                 // Check if they are stored correctly.
-                assert_eq!(data[0], 0x02);
-                check_weighted_list_index(&data, &mut correct, 1);
-                check_weighted_list_index(&data, &mut correct, 6);
+                check_weighted_list_index(&data, &mut correct, 0);
+                check_weighted_list_index(&data, &mut correct, 5);
             }
 
             #[test]
@@ -741,11 +749,10 @@ pub mod encoding {
                 HuffmanCoder::store_weighted_list(&list, &mut data);
 
                 // Check if they are stored correctly.
-                assert_eq!(data[0], 0x04); // Indicates number of elements.
-                check_weighted_list_index(&data, &mut correct, 1);
-                check_weighted_list_index(&data, &mut correct, 6);
-                check_weighted_list_index(&data, &mut correct, 11);
-                check_weighted_list_index(&data, &mut correct, 16);
+                check_weighted_list_index(&data, &mut correct, 0);
+                check_weighted_list_index(&data, &mut correct, 5);
+                check_weighted_list_index(&data, &mut correct, 10);
+                check_weighted_list_index(&data, &mut correct, 15);
             }
 
             fn assert_maps_eq(map_a: HashMap<u8, u32>, map_b: HashMap<u8, u32>) {
@@ -754,6 +761,9 @@ pub mod encoding {
                     // Guess we gotta get into the details then.
 
                     for (key_a, value_a) in map_a {
+
+                        println!("{}", key_a);
+
                         let optional = map_b.get(&key_a);
 
                         match optional {
@@ -763,7 +773,7 @@ pub mod encoding {
                                 }
                             },
                             None => {
-                                panic!("Maps have non-matching key.");
+                                panic!("Maps have non-matching key: {}.", key_a);
                             }
                         }
                     }
@@ -779,8 +789,10 @@ pub mod encoding {
                 let mut list: HashMap<u8, u32> = HashMap::new();
                 list.entry(0x55).or_insert(0xA3A33A3A);
 
-                let data: Vec<u8>  = vec![0x01,
-                                          0x55, 0xA3, 0xA3, 0x3A, 0x3A];
+                let data: Vec<u8>  = vec![
+                    0x55, 0xA3, 0xA3, 0x3A, 0x3A,
+                    0x00, 0x00, 0x00, 0x00, 0x00
+                ];
                 let mut data_cursor = Cursor::new(&data);
 
                 let weighted_list =
@@ -796,9 +808,11 @@ pub mod encoding {
                 list.entry(0x55).or_insert(0xA3A33A3A);
                 list.entry(0xAA).or_insert(0x53533535);
 
-                let data: Vec<u8>  = vec![0x02,
-                                          0xAA, 0x53, 0x53, 0x35, 0x35,
-                                          0x55, 0xA3, 0xA3, 0x3A, 0x3A];
+                let data: Vec<u8>  = vec![
+                    0xAA, 0x53, 0x53, 0x35, 0x35,
+                    0x55, 0xA3, 0xA3, 0x3A, 0x3A,
+                    0x00, 0x00, 0x00, 0x00, 0x00
+                ];
                 let mut data_cursor = Cursor::new(&data);
 
                 let weighted_list =
@@ -816,11 +830,13 @@ pub mod encoding {
                 list.entry(0x01).or_insert(0x10101010);
                 list.entry(0x02).or_insert(0x20202020);
 
-                let data: Vec<u8>  = vec![0x04,
-                                          0xAA, 0x53, 0x53, 0x35, 0x35,
-                                          0x01, 0x10, 0x10, 0x10, 0x10,
-                                          0x02, 0x20, 0x20, 0x20, 0x20,
-                                          0x55, 0xA3, 0xA3, 0x3A, 0x3A];
+                let data: Vec<u8>  = vec![
+                    0xAA, 0x53, 0x53, 0x35, 0x35,
+                    0x01, 0x10, 0x10, 0x10, 0x10,
+                    0x02, 0x20, 0x20, 0x20, 0x20,
+                    0x55, 0xA3, 0xA3, 0x3A, 0x3A,
+                    0x00, 0x00, 0x00, 0x00, 0x00
+                ];
                 let mut data_cursor = Cursor::new(&data);
 
                 let weighted_list =
@@ -843,7 +859,8 @@ pub mod encoding {
                 let mut stored = Vec::new();
                 HuffmanCoder::store_weighted_list(&list, &mut stored);
 
-                let mut data_cursor = Cursor::new(&data);
+                let mut data_cursor = Cursor::new(&stored);
+                data_cursor.set_position(0);
                 let loaded =
                     HuffmanCoder::load_weighted_list(&mut data_cursor).unwrap();
 
@@ -1325,16 +1342,21 @@ pub mod encoding {
 
                 let encoded = encoder.encode(&data).expect("Failed to encode.");
 
-                assert_eq!(encoded.len(), 7); // Length of data.
-                assert_eq!(encoded[0], 0x01); // Number of symbols.
+                assert_eq!(encoded.len(), 11); // Length of data.
 
-                assert_eq!(encoded[1], 0x05); // First symbol is a 5.
-                assert_eq!(encoded[2], 0x00); // There is one instance of it.
+                assert_eq!(encoded[0], 0x05); // First symbol is a 5.
+                assert_eq!(encoded[1], 0x00); // There is one instance of it.
+                assert_eq!(encoded[2], 0x00);
                 assert_eq!(encoded[3], 0x00);
-                assert_eq!(encoded[4], 0x00);
-                assert_eq!(encoded[5], 0x01);
+                assert_eq!(encoded[4], 0x01);
 
-                assert_eq!(encoded[6], 0x80); // Actually encoded data. Ends with EOF.
+                assert_eq!(encoded[5], 0x00); // Second symbol is the end of header marker.
+                assert_eq!(encoded[6], 0x00);
+                assert_eq!(encoded[7], 0x00);
+                assert_eq!(encoded[8], 0x00);
+                assert_eq!(encoded[9], 0x00);
+
+                assert_eq!(encoded[10], 0x80); // Actually encoded data. Ends with EOF.
             }
 
             #[test]
@@ -1345,16 +1367,21 @@ pub mod encoding {
 
                 let encoded = encoder.encode(&data).expect("Failed to encode.");
 
-                assert_eq!(encoded.len(), 7); // Length of data.
-                assert_eq!(encoded[0], 0x01); // Number of symbols.
+                assert_eq!(encoded.len(), 11); // Length of data.
 
-                assert_eq!(encoded[1], 0x05); // First symbol is a 5.
-                assert_eq!(encoded[2], 0x00); // There are 5 instances of it.
+                assert_eq!(encoded[0], 0x05); // First symbol is a 5.
+                assert_eq!(encoded[1], 0x00); // There are 7 instances of it.
+                assert_eq!(encoded[2], 0x00);
                 assert_eq!(encoded[3], 0x00);
-                assert_eq!(encoded[4], 0x00);
-                assert_eq!(encoded[5], 0x07);
+                assert_eq!(encoded[4], 0x07);
 
-                assert_eq!(encoded[6], 0xFE); // Actually encoded data. Ends with EOF.
+                assert_eq!(encoded[5], 0x00); // Mark end of header.
+                assert_eq!(encoded[6], 0x00);
+                assert_eq!(encoded[7], 0x00);
+                assert_eq!(encoded[8], 0x00);
+                assert_eq!(encoded[9], 0x00);
+
+                assert_eq!(encoded[10], 0xFE); // Actually encoded data. Ends with EOF.
             }
 
             #[test]
@@ -1365,50 +1392,55 @@ pub mod encoding {
 
                 let encoded = encoder.encode(&data).expect("Failed to encode.");
 
-                assert_eq!(encoded.len(), 13); // Length of data.
-                assert_eq!(encoded[0], 0x02); // Number of symbols.
+                assert_eq!(encoded.len(), 17); // Length of data.
 
-                let first = encoded[1];
+                let first = encoded[0];
 
                 match first {
                     0x05 => {
-                        assert_eq!(encoded[2], 0x00); // There are 5 instances of the 5.
+                        assert_eq!(encoded[1], 0x00); // There are 5 instances of the 5.
+                        assert_eq!(encoded[2], 0x00);
                         assert_eq!(encoded[3], 0x00);
-                        assert_eq!(encoded[4], 0x00);
-                        assert_eq!(encoded[5], 0x05);
+                        assert_eq!(encoded[4], 0x05);
                     },
                     0x04 => {
-                        assert_eq!(encoded[2], 0x00); // There are 4 instances of the 4.
+                        assert_eq!(encoded[1], 0x00); // There are 4 instances of the 4.
+                        assert_eq!(encoded[2], 0x00);
                         assert_eq!(encoded[3], 0x00);
-                        assert_eq!(encoded[4], 0x00);
-                        assert_eq!(encoded[5], 0x04);
+                        assert_eq!(encoded[4], 0x04);
                     },
                     _ => panic!("Unexpected symbol for first.")
                 }
 
-                let second = encoded[6];
+                let second = encoded[5];
 
                 // First and second symbol must be for different things, being 4 or 5.
                 assert_ne!(second, first);
 
                 match second {
                     0x05 => {
-                        assert_eq!(encoded[7], 0x00); // There are 5 instances of the 5.
+                        assert_eq!(encoded[6], 0x00); // There are 5 instances of the 5.
+                        assert_eq!(encoded[7], 0x00);
                         assert_eq!(encoded[8], 0x00);
-                        assert_eq!(encoded[9], 0x00);
-                        assert_eq!(encoded[10], 0x05);
+                        assert_eq!(encoded[9], 0x05);
                     },
                     0x04 => {
-                        assert_eq!(encoded[7], 0x00); // There are 4 instances of the 4.
+                        assert_eq!(encoded[6], 0x00); // There are 4 instances of the 4.
+                        assert_eq!(encoded[7], 0x00);
                         assert_eq!(encoded[8], 0x00);
-                        assert_eq!(encoded[9], 0x00);
-                        assert_eq!(encoded[10], 0x04);
+                        assert_eq!(encoded[9], 0x04);
                     },
                     _ => panic!("Unexpected symbol for first.")
                 }
 
-                assert_eq!(encoded[11], 0xFA); // Actually encoded data. Ends with EOF.
-                assert_eq!(encoded[12], 0xA8);
+                assert_eq!(encoded[10], 0x00); // Mark end of header.
+                assert_eq!(encoded[11], 0x00);
+                assert_eq!(encoded[12], 0x00);
+                assert_eq!(encoded[13], 0x00);
+                assert_eq!(encoded[14], 0x00);
+
+                assert_eq!(encoded[15], 0xFA); // Actually encoded data. Ends with EOF.
+                assert_eq!(encoded[16], 0xA8);
             }
         }
 
@@ -1461,10 +1493,11 @@ pub mod encoding {
 
             #[test]
             fn decode_several_of_two() {
-                let data: Vec<u8> = vec![0x02, // There are two symbols.
-                                         0x05, 0x00, 0x00, 0x00, 0x05, // 5 instances of 5.
-                                         0x04, 0x00, 0x00, 0x00, 0x04, // 4 instances of 4.
-                                         0xFA, 0xA8 // Encoded data.
+                let data: Vec<u8> = vec![
+                    0x05, 0x00, 0x00, 0x00, 0x05, // 5 instances of 5.
+                    0x04, 0x00, 0x00, 0x00, 0x04, // 4 instances of 4.
+                    0x00, 0x00, 0x00, 0x00, 0x00, // End of list.
+                    0xFA, 0xA8 // Encoded data.
                 ];
 
                 let encoder = HuffmanCoder::new();
